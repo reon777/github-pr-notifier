@@ -221,14 +221,6 @@ async function sendSlackNotification(title, message, url, extraData = {}) {
     // Slackメッセージブロックを構築
     const blocks = [
       {
-        "type": "header",
-        "text": {
-          "type": "plain_text",
-          "text": title,
-          "emoji": true
-        }
-      },
-      {
         "type": "section",
         "text": {
           "type": "mrkdwn",
@@ -253,15 +245,6 @@ async function sendSlackNotification(title, message, url, extraData = {}) {
               "emoji": true
             },
             "url": url
-          }
-        ]
-      },
-      {
-        "type": "context",
-        "elements": [
-          {
-            "type": "mrkdwn",
-            "text": `通知時刻: ${new Date().toLocaleString()}`
           }
         ]
       }
