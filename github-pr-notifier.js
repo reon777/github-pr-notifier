@@ -1,54 +1,56 @@
 // GitHub PR Slack通知スクリプト
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
 const { Octokit } = require('@octokit/rest');
 const axios = require('axios');
 const os = require('os');
-const ini = require('ini');
+require('dotenv').config();
 
-// 設定ファイルのパス
-const CONFIG_DIR = path.join(os.homedir(), '.github-pr-notifier');
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.ini');
-const CACHE_FILE = path.join(CONFIG_DIR, 'cache.json');
+// キャッシュディレクトリの設定
+const CACHE_DIR = path.join(os.homedir(), '.github-pr-notifier');
+const CACHE_FILE = path.join(CACHE_DIR, 'cache.json');
 
-// 設定ディレクトリが存在しない場合は作成
-if (!fs.existsSync(CONFIG_DIR)) {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+// キャッシュディレクトリが存在しない場合は作成
+if (!fs.existsSync(CACHE_DIR)) {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
 }
 
-// デフォルト設定
-const DEFAULT_CONFIG = {
+// 環境変数からの設定読み込み
+const config = {
   github: {
-    token: '',
-    username: '',
-    check_interval: 300, // 5分（秒単位）
+    token: process.env.GITHUB_TOKEN || '',
+    username: process.env.GITHUB_USERNAME || '',
+    checkInterval: parseInt(process.env.CHECK_INTERVAL || '300')
   },
-  notification: {
-    slack_webhook: '', // SlackのWebhook URL
-    slack_channel: '', // オプション: 特定のチャンネルを指定する場合
-    slack_username: 'GitHub PR Notifier', // 通知に表示される名前
-    slack_icon_emoji: ':bell:' // 通知アイコン
+  slack: {
+    webhook: process.env.SLACK_WEBHOOK || '',
+    username: process.env.SLACK_USERNAME || 'GitHub PR Notifier',
+    iconEmoji: process.env.SLACK_ICON_EMOJI || ':bell:'
   }
 };
 
-// 設定ファイルの読み込み
-let config;
-if (fs.existsSync(CONFIG_FILE)) {
-  const configContent = fs.readFileSync(CONFIG_FILE, 'utf-8');
-  config = ini.parse(configContent);
-} else {
-  config = DEFAULT_CONFIG;
-  fs.writeFileSync(CONFIG_FILE, ini.stringify(config));
-  console.log(`設定ファイルを作成しました: ${CONFIG_FILE}`);
-  console.log('GitHub トークンとユーザー名、SlackのWebhook URLを設定してください');
+// .envファイルが存在しない場合は作成
+if (!fs.existsSync('.env')) {
+  const envContent = `# GitHub設定
+GITHUB_TOKEN=
+GITHUB_USERNAME=
+CHECK_INTERVAL=300
+
+# Slack設定
+SLACK_WEBHOOK=
+SLACK_CHANNEL=
+SLACK_USERNAME=GitHub PR Notifier
+SLACK_ICON_EMOJI=:bell:
+`;
+  fs.writeFileSync('.env', envContent);
+  console.log('.envファイルを作成しました。GitHub トークンとユーザー名、SlackのWebhook URLを設定してください。');
 }
 
 // キャッシュファイルの読み込み
 let cache = {
-  last_checked: new Date().toISOString(),
-  notified_comments: [],
-  assigned_prs: []
+  lastChecked: new Date().toISOString(),
+  notifiedComments: [],
+  assignedPRs: []
 };
 
 if (fs.existsSync(CACHE_FILE)) {
@@ -71,7 +73,7 @@ async function updateAssignedPRs() {
   const token = config.github.token;
   
   if (!username || !token) {
-    console.log('GitHub設定が不完全です。設定ファイルを確認してください。');
+    console.log('GitHub設定が不完全です。.envファイルを確認してください。');
     return [];
   }
   
@@ -108,7 +110,7 @@ async function updateAssignedPRs() {
       }
     }
     
-    cache.assigned_prs = uniquePRs;
+    cache.assignedPRs = uniquePRs;
     saveCache();
     
     return uniquePRs;
@@ -120,15 +122,15 @@ async function updateAssignedPRs() {
 
 async function checkForNewComments() {
   const username = config.github.username;
-  const lastChecked = new Date(cache.last_checked);
+  const lastChecked = new Date(cache.lastChecked);
   const since = lastChecked.toISOString();
   
-  let assignedPRs = cache.assigned_prs;
+  let assignedPRs = cache.assignedPRs;
   if (!assignedPRs || assignedPRs.length === 0) {
     assignedPRs = await updateAssignedPRs();
   }
   
-  const notifiedComments = new Set(cache.notified_comments);
+  const notifiedComments = new Set(cache.notifiedComments);
   const newNotifiedComments = [...notifiedComments];
   
   for (const pr of assignedPRs) {
@@ -190,9 +192,9 @@ async function checkForNewComments() {
   }
   
   // 最終チェック時間と通知済みコメントIDを更新
-  cache.last_checked = new Date().toISOString();
+  cache.lastChecked = new Date().toISOString();
   // 最新1000件だけ保持
-  cache.notified_comments = newNotifiedComments.slice(-1000);
+  cache.notifiedComments = newNotifiedComments.slice(-1000);
   saveCache();
 }
 
@@ -206,10 +208,10 @@ function showNotification(title, message, url = null, extraData = {}) {
 }
 
 async function sendSlackNotification(title, message, url, extraData = {}) {
-  const webhookUrl = config.notification.slack_webhook;
+  const webhookUrl = config.slack.webhook;
   
   if (!webhookUrl) {
-    console.log('Slack Webhook URLが設定されていません。設定ファイルを確認してください。');
+    console.log('Slack Webhook URLが設定されていません。.envファイルを確認してください。');
     return;
   }
   
@@ -267,9 +269,8 @@ async function sendSlackNotification(title, message, url, extraData = {}) {
     
     // Slackに送信するペイロード
     const payload = {
-      channel: config.notification.slack_channel || '',
-      username: config.notification.slack_username || 'GitHub PR Notifier',
-      icon_emoji: config.notification.slack_icon_emoji || ':bell:',
+      username: config.slack.username || 'GitHub PR Notifier',
+      icon_emoji: config.slack.iconEmoji || ':bell:',
       blocks: blocks
     };
     
@@ -289,23 +290,22 @@ async function main() {
   console.log('GitHub PR Slack通知スクリプトを開始しました');
   
   if (!config.github.token || !config.github.username) {
-    console.log('GitHub設定が不完全です。以下のファイルを編集してください:');
-    console.log(CONFIG_FILE);
+    console.log('GitHub設定が不完全です。.envファイルを編集してください。');
     return;
   }
   
-  if (!config.notification.slack_webhook) {
-    console.log('Slack Webhookが設定されていません。以下のファイルを編集してください:');
-    console.log(CONFIG_FILE);
+  if (!config.slack.webhook) {
+    console.log('Slack Webhookが設定されていません。.envファイルを編集してください。');
     console.log('Slack Webhookの取得方法: https://api.slack.com/messaging/webhooks');
+    return;
   }
   
-  const checkInterval = parseInt(config.github.check_interval) * 1000;
+  const checkInterval = config.github.checkInterval * 1000;
   
   try {
     // 最初のPR一覧取得
     await updateAssignedPRs();
-    console.log(`監視中のPR: ${cache.assigned_prs.length}件`);
+    console.log(`監視中のPR: ${cache.assignedPRs.length}件`);
     
     // 定期チェック
     setInterval(async () => {
