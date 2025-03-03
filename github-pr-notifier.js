@@ -290,6 +290,14 @@ async function main() {
     await updateAssignedPRs();
     console.log(`監視中のPR: ${cache.assignedPRs.length}件`);
     
+    // 監視中のPRの詳細をログに出力
+    if (cache.assignedPRs.length > 0) {
+      console.log('監視中のPR一覧:');
+      cache.assignedPRs.forEach((pr, index) => {
+        console.log(`  ${index + 1}. ${pr.owner}/${pr.repo} #${pr.number}: ${pr.title}`);
+      });
+    }
+    
     // 定期チェック
     setInterval(async () => {
       const now = new Date();
@@ -299,6 +307,13 @@ async function main() {
       // 30分ごとにPR一覧を更新
       if (now.getMinutes() % 30 === 0) {
         await updateAssignedPRs();
+        console.log(`監視中のPR: ${cache.assignedPRs.length}件`);
+        if (cache.assignedPRs.length > 0) {
+          console.log('監視中のPR一覧:');
+          cache.assignedPRs.forEach((pr, index) => {
+            console.log(`  ${index + 1}. ${pr.owner}/${pr.repo} #${pr.number}: ${pr.title}`);
+          });
+        }
       }
     }, checkInterval);
     
