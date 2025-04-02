@@ -21,3 +21,6 @@ config.ini
 # OS関連
 .DS_Store
 Thumbs.db
+
+# キャッシュファイル
+cache.json

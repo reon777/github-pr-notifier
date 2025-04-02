@@ -6,8 +6,8 @@ const axios = require('axios');
 const os = require('os');
 require('dotenv').config();
 
-// キャッシュディレクトリの設定
-const CACHE_DIR = path.join(os.homedir(), '.github-pr-notifier');
+// キャッシュディレクトリの設定（ローカルプロジェクトディレクトリに保存）
+const CACHE_DIR = path.join(__dirname, '.cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'cache.json');
 
 // キャッシュディレクトリが存在しない場合は作成
@@ -47,16 +47,27 @@ SLACK_ICON_EMOJI=:bell:
 }
 
 // キャッシュファイルの読み込み
+const currentTime = new Date();
 let cache = {
-  lastChecked: new Date().toISOString(),
+  lastChecked: currentTime.toISOString(),  // 初期値を現在時刻に設定
   notifiedComments: [],
-  assignedPRs: []
+  notifiedReviews: [], // レビュー通知用のキャッシュを追加
+  assignedPRs: [],
+  firstRunTime: currentTime.toISOString()  // 初回実行時刻を記録
 };
 
 if (fs.existsSync(CACHE_FILE)) {
   try {
     const cacheContent = fs.readFileSync(CACHE_FILE, 'utf-8');
     cache = JSON.parse(cacheContent);
+    // 古いキャッシュ形式に対応するための初期化
+    if (!cache.notifiedReviews) {
+      cache.notifiedReviews = [];
+    }
+    // firstRunTimeがなければ追加
+    if (!cache.firstRunTime) {
+      cache.firstRunTime = cache.lastChecked;
+    }
   } catch (error) {
     console.log('キャッシュファイルが破損しています。新しいキャッシュを作成します。');
   }
@@ -122,8 +133,12 @@ async function updateAssignedPRs() {
 
 async function checkForNewComments() {
   const username = config.github.username;
+  
+  // 最終チェック時刻を取得
   const lastChecked = new Date(cache.lastChecked);
+  console.log(`最終チェック: ${lastChecked}`);
   const since = lastChecked.toISOString();
+  console.log(`チェック開始: ${since}`);
   
   let assignedPRs = cache.assignedPRs;
   if (!assignedPRs || assignedPRs.length === 0) {
@@ -132,6 +147,13 @@ async function checkForNewComments() {
   
   const notifiedComments = new Set(cache.notifiedComments);
   const newNotifiedComments = [...notifiedComments];
+  // console.log(`通知済みコメント数: ${notifiedComments.size}`);
+  // console.log(`通知済みコメント: ${Array.from(notifiedComments)}`);
+  
+  // レビュー通知用のキャッシュ
+  const notifiedReviews = new Set(cache.notifiedReviews);
+  const newNotifiedReviews = [...notifiedReviews];
+  // console.log(`通知済みレビュー数: ${notifiedReviews.size}`);
   
   for (const pr of assignedPRs) {
     try {
@@ -142,6 +164,8 @@ async function checkForNewComments() {
         issue_number: pr.number,
         since: since
       });
+      // console.log(`PR #${pr.number}のコメントを取得しました`);
+      // console.log(issueCommentsResponse.data);
       
       // レビューコメントを取得
       const reviewCommentsResponse = await octokit.pulls.listReviewComments({
@@ -150,6 +174,27 @@ async function checkForNewComments() {
         pull_number: pr.number,
         since: since
       });
+      // console.log(`PR #${pr.number}のレビューコメントを取得しました`);
+      // console.log(reviewCommentsResponse.data);
+      
+      // PRレビュー（承認や変更要求など）を取得
+      const reviewsResponse = await octokit.pulls.listReviews({
+        owner: pr.owner,
+        repo: pr.repo,
+        pull_number: pr.number
+      });
+      // console.log(`PR #${pr.number}のレビューを取得しました`);
+      // console.log(reviewsResponse.data);
+      
+      // レビューをフィルタリング
+      const newReviews = reviewsResponse.data.filter(review => {
+        const reviewDate = new Date(review.submitted_at);
+        const reviewer = review.user.login;
+        // 自分自身のレビューは除外する
+        return reviewDate > lastChecked && 
+               !notifiedReviews.has(review.id.toString()) &&
+               reviewer !== username; // 自分のレビューは除外
+      });
       
       // 両方のコメントを処理
       const allComments = [
@@ -157,10 +202,12 @@ async function checkForNewComments() {
         ...reviewCommentsResponse.data
       ];
       
-      const newComments = allComments.filter(comment => 
-        comment.user.login !== username && // 自分のコメントを除外
-        !notifiedComments.has(comment.id.toString()) // 既に通知済みのコメントを除外
-      );
+      const newComments = allComments.filter(comment => {
+        const commenter = comment.user.login;
+        // 自分自身のコメントは除外する
+        return !notifiedComments.has(comment.id.toString()) && 
+               commenter !== username; // 自分のコメントは除外
+      });
       
       // 新しいコメントがあれば通知
       for (const comment of newComments) {
@@ -186,15 +233,73 @@ async function checkForNewComments() {
         // 通知済みリストに追加
         newNotifiedComments.push(comment.id.toString());
       }
+      
+      // 新しいレビューがあれば通知
+      for (const review of newReviews) {
+        const reviewer = review.user.login;
+        let reviewState = review.state;
+        let reviewBody = review.body || '';
+        
+        // レビューの状態をわかりやすい日本語に変換
+        let stateMessage = '';
+        let stateEmoji = '';
+        
+        switch (reviewState) {
+          case 'APPROVED':
+            stateMessage = '承認しました :white_check_mark:';
+            stateEmoji = ':white_check_mark:';
+            break;
+          case 'CHANGES_REQUESTED':
+            stateMessage = '変更を要求しています :warning:';
+            stateEmoji = ':warning:';
+            break;
+          case 'COMMENTED':
+            stateMessage = 'コメントしました :speech_balloon:';
+            stateEmoji = ':speech_balloon:';
+            break;
+          case 'DISMISSED':
+            stateMessage = 'レビューを却下しました :x:';
+            stateEmoji = ':x:';
+            break;
+          default:
+            stateMessage = `レビューしました (${reviewState})`;
+            stateEmoji = ':eyes:';
+        }
+        
+        // レビューコメントが長い場合は省略
+        if (reviewBody.length > 100) {
+          reviewBody = reviewBody.substring(0, 100) + '...';
+        }
+        
+        const title = `${pr.repo} PR #${pr.number}に新しいレビュー`;
+        const message = `${reviewer}が${stateMessage}${reviewBody ? `: ${reviewBody}` : ''}`;
+        const url = review.html_url || pr.url;
+        
+        showNotification(title, message, url, {
+          repo: pr.repo,
+          pr_number: pr.number,
+          pr_title: pr.title,
+          pr_url: pr.url,
+          reviewer,
+          review_state: reviewState,
+          review_state_message: stateMessage,
+          review_state_emoji: stateEmoji,
+          review_body: reviewBody
+        });
+        
+        // 通知済みリストに追加
+        newNotifiedReviews.push(review.id.toString());
+      }
     } catch (error) {
       console.error(`${pr.owner}/${pr.repo} PR #${pr.number} の処理中にエラー:`, error.message);
     }
   }
   
-  // 最終チェック時間と通知済みコメントIDを更新
+  // 最終チェック時間と通知済みIDを更新
   cache.lastChecked = new Date().toISOString();
   // 最新1000件だけ保持
   cache.notifiedComments = newNotifiedComments.slice(-1000);
+  cache.notifiedReviews = newNotifiedReviews.slice(-1000);
   saveCache();
 }
 
@@ -216,39 +321,57 @@ async function sendSlackNotification(title, message, url, extraData = {}) {
   }
   
   try {
-    const { repo, pr_number, pr_title, commenter, comment_body } = extraData;
+    const { repo, pr_number, pr_title, commenter, comment_body, 
+            reviewer, review_state, review_state_message, review_state_emoji, review_body } = extraData;
     
     // Slackメッセージブロックを構築
-    const blocks = [
+    let blocks = [
       {
         "type": "section",
         "text": {
           "type": "mrkdwn",
           "text": `*PR:* <${url}|${repo} #${pr_number}> - ${pr_title}`
         }
-      },
-      {
+      }
+    ];
+    
+    // コメント通知の場合
+    if (commenter) {
+      blocks.push({
         "type": "section",
         "text": {
           "type": "mrkdwn",
           "text": `*@${commenter}*: ${comment_body}`
         }
-      },
-      {
-        "type": "actions",
-        "elements": [
-          {
-            "type": "button",
-            "text": {
-              "type": "plain_text",
-              "text": "コメントを確認",
-              "emoji": true
-            },
-            "url": url
-          }
-        ]
-      }
-    ];
+      });
+    }
+    
+    // レビュー通知の場合
+    if (reviewer) {
+      blocks.push({
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": `*@${reviewer}* ${review_state_message}${review_body ? `\n>${review_body}` : ''}`
+        }
+      });
+    }
+    
+    // アクションボタン
+    blocks.push({
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": reviewer ? "レビューを確認" : "コメントを確認",
+            "emoji": true
+          },
+          "url": url
+        }
+      ]
+    });
     
     // Slackに送信するペイロード
     const payload = {
@@ -301,7 +424,7 @@ async function main() {
     // 定期チェック
     setInterval(async () => {
       const now = new Date();
-      console.log(`\n${now.toLocaleString()} コメントをチェック中...`);
+      console.log(`\n${now.toLocaleString()} コメントとレビューをチェック中...`);
       await checkForNewComments();
       
       // 30分ごとにPR一覧を更新
