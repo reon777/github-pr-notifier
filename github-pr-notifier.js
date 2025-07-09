@@ -78,6 +78,12 @@ const octokit = new Octokit({
   auth: config.github.token
 });
 
+// botかどうかを判定する関数
+function isBot(user) {
+  return user.type === 'Bot' || user.login.endsWith('[bot]');
+}
+
+
 // GitHub APIヘルパー関数
 async function updateAssignedPRs() {
   const username = config.github.username;
@@ -212,6 +218,15 @@ async function checkForNewComments() {
       // 新しいコメントがあれば通知
       for (const comment of newComments) {
         const commenter = comment.user.login;
+        const isBotComment = isBot(comment.user);
+        
+        // botの場合は通知しない
+        if (isBotComment) {
+          console.log(`Bot ${commenter} からのコメントをスキップしました`);
+          newNotifiedComments.push(comment.id.toString());
+          continue;
+        }
+        
         let commentBody = comment.body;
         if (commentBody.length > 100) {
           commentBody = commentBody.substring(0, 100) + '...';
